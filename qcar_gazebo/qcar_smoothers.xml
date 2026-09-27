@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="qcar_smoothers">
+    <class type="qcar_gazebo::smoothers::CuspStraightenerSmoother" base_class_type="nav2_core::Smoother">
+      <description>Re-projects the path onto a straight line for a short distance after each Reeds-Shepp cusp, so the vehicle establishes stable straight-line tracking before curving - front-steered vehicles are far less self-correcting when reversing than driving forward, and starting to curve immediately from a standing start in reverse is the hardest sub-case of that.</description>
+    </class>
+  </library>
+</class_libraries>

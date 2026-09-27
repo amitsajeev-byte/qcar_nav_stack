@@ -1,0 +1,87 @@
+<!--
+  Adapted from the stock nav2_bt_navigator tree navigate_to_pose_w_replanning_and_recovery.xml.
+  Changes from stock:
+
+  1. <SmoothPath> (smoother_id="cusp_straightener", a custom nav2_core::Smoother plugin - see
+     src/smoothers/cusp_straightener_smoother.cpp) runs right after every ComputePathToPose,
+     wrapped in a <Sequence> since RecoveryNode/Fallback each expect a single child in that slot.
+     Straightens the path for a short distance after each reverse-entering cusp, gradually
+     blending back into the original curve, to help MPPI commit to tight K-turn segments instead
+     of freezing at the cusp.
+
+  2. <Spin> is removed from RecoveryActions: a pure in-place rotation is physically impossible
+     for this Ackermann car (steering has no effect at zero linear velocity), so it would only
+     ever be a guaranteed no-op recovery attempt that burns its timeout.
+
+  3. Replanning only triggers if the path actually becomes invalid (an obstacle appears) or the
+     goal changes, instead of unconditionally discarding and recomputing on a fixed timer - a
+     naive 1Hz unconditional replan interrupts K-turns before they can complete, since the
+     in-progress reverse segment gets thrown away and replanned from scratch every second.
+     IsPathValid returns SUCCESS on the default-constructed/empty {path} blackboard entry before
+     ComputePathToPose has ever run, so an unconditional FIRST ComputePathToPose
+     (InitialComputePathToPose below) is required to guarantee {path} is populated before the
+     conditional check is ever reached. That first-run gating must be a plain <Sequence>, not
+     <Fallback>/<PipelineSequence> - both of those reset their children on every SUCCESS, which
+     re-arms a "run once" flag and reintroduces unconditional replanning every tick. A plain
+     <Sequence> keeps its child index across ticks and only resets on the whole Sequence's own
+     failure, so InitialComputePathToPose naturally runs once and is skipped thereafter for as
+     long as the tree is RUNNING, re-arming correctly on each new RecoveryNode retry.
+
+  4. FollowPath has no retry wrapper of its own: a single FollowPath failure (e.g. the progress
+     checker timing out mid-cusp) goes straight to RecoveryFallback below, which always clears
+     both costmaps and settles before forcing a fresh replan from the robot's current pose. An
+     earlier design gave FollowPath one bare retry that resent the exact same,
+     already-partially-executed path unchanged - since that stale path was often still judged
+     collision-free, the resend could re-trigger the controller's cusp-inversion handling to
+     re-scan the full original path for its FIRST cusp and re-target it, even after the robot had
+     already driven past that cusp and was working on a later one. Replanning from the robot's
+     actual current pose instead cannot re-target an already-passed cusp, since that cusp isn't
+     in the new plan at all.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="10" name="NavigateRecovery">
+      <Sequence name="NavigateOuter">
+        <RecoveryNode number_of_retries="1" name="InitialComputePathToPose">
+          <Sequence>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}" smoother_id="cusp_straightener" check_for_collisions="false"/>
+          </Sequence>
+          <ClearEntireCostmap name="ClearGlobalCostmap-InitialContext" service_name="global_costmap/clear_entirely_global_costmap"/>
+        </RecoveryNode>
+        <PipelineSequence name="NavigateWithReplanning">
+          <RateController hz="1.0">
+            <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+              <Fallback name="ReplanOnlyIfInvalid">
+                <ReactiveSequence name="CheckIfNewPathNeeded">
+                  <Inverter>
+                    <GlobalUpdatedGoal/>
+                  </Inverter>
+                  <IsPathValid path="{path}"/>
+                </ReactiveSequence>
+                <Sequence>
+                  <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+                  <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}" smoother_id="cusp_straightener" check_for_collisions="false"/>
+                </Sequence>
+              </Fallback>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            </RecoveryNode>
+          </RateController>
+          <!-- No retry wrapper here - see note 4 above. -->
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+        </PipelineSequence>
+      </Sequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearSettleReplan">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <Wait wait_duration="5"/>
+          </Sequence>
+          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

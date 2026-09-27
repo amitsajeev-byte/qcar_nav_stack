@@ -1,0 +1,64 @@
+<!--
+  Adapted from the stock nav2_bt_navigator tree
+  navigate_through_poses_w_replanning_and_recovery.xml - same treatment as
+  navigate_to_pose_w_replanning_and_recovery.xml in this directory (see the fuller comment there
+  for the full rationale/history, including a SingleTrigger/Fallback approach that was tried and
+  found to cause ~33Hz unconditional replanning - a plain Fallback resets its children to IDLE on
+  every SUCCESS, which re-arms SingleTrigger's "run once" flag every single tick): replaced blind
+  timed replanning with "replan only if the path becomes invalid or the goal changes", using an
+  unconditional one-time initial plan (InitialComputePathThroughPoses) ahead of the conditional
+  IsPathValid check, guarded with a plain <Sequence> instead of SingleTrigger - a Sequence keeps
+  its child index as state across ticks and only resets on the whole Sequence's own failure or
+  full completion, so as long as a later sibling (the inner ReplanAndFollow PipelineSequence) is
+  still RUNNING, the initial-plan step is never re-ticked.
+
+  RemovePassedGoals sits in the outermost PipelineSequence (not inside the once-only Sequence)
+  since it needs the opposite semantics - re-run on every tick, not once - so goals get pruned as
+  soon as they're passed rather than only when a replan happens to occur.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+        <Sequence name="ComputeAndFollowPath">
+          <RecoveryNode number_of_retries="1" name="InitialComputePathThroughPoses">
+            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-InitialContext" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+          <PipelineSequence name="ReplanAndFollow">
+            <RateController hz="1.0">
+              <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+                <Fallback name="ReplanOnlyIfInvalid">
+                  <ReactiveSequence name="CheckIfNewPathNeeded">
+                    <Inverter>
+                      <GlobalUpdatedGoal/>
+                    </Inverter>
+                    <IsPathValid path="{path}"/>
+                  </ReactiveSequence>
+                  <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                </Fallback>
+                <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+              </RecoveryNode>
+            </RateController>
+            <RecoveryNode number_of_retries="1" name="FollowPath">
+              <FollowPath path="{path}" controller_id="FollowPath"/>
+              <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+            </RecoveryNode>
+          </PipelineSequence>
+        </Sequence>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Wait wait_duration="5"/>
+          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

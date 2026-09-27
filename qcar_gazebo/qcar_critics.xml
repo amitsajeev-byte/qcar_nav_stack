@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="qcar_critics">
+    <class type="mppi::critics::EarlyCommitCritic" base_class_type="mppi::critics::CriticFunction">
+      <description>Unconditional early-trajectory heading critic - commits to the path's near-term curvature from the very first control cycle, without the gating conditions nav2's own PathAngleCritic/ConstraintCritic apply.</description>
+    </class>
+  </library>
+</class_libraries>
